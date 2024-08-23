@@ -10,6 +10,12 @@ from zope.schema.interfaces import IIterableSource
 from zope.schema.interfaces import ITitledTokenizedTerm
 from zope.schema.interfaces import ITokenizedTerm
 from zope.schema.interfaces import IVocabulary
+from zope.schema.interfaces import ITreeVocabulary
+from typing import TypeAlias
+from collections import OrderedDict
+from zope.schema.vocabulary import SimpleTerm
+
+TreeVocabItems: TypeAlias = OrderedDict[SimpleTerm, 'TreeVocabItems']
 
 
 @implementer(ISerializeToJson)
@@ -30,17 +36,38 @@ class SerializeVocabLikeToJson:
         tokens = self.request.form.get("tokens", [])
         b_size = self.request.form.get("b_size", "")
 
+        if title and token:
+            self.request.response.setStatus(400)
+            return dict(
+                error=dict(
+                    type="Invalid parameters",
+                    message="You can not filter by title and token at the same time.",
+                )  # noqa
+            )
+
+        if ITreeVocabulary.providedBy(vocabulary):
+            terms = self.filter_tree_vocab(vocabulary.items(), title=title, token=token, tokens=tokens)
+
+            if b_size == '-1':
+                serialized_terms = self.serialize_tree_vocab(terms)
+                return {'@id': vocabulary_id, 'items': serialized_terms}
+
+            batch = HypermediaBatch(self.request, list(terms.items()))
+
+            serialized_terms = self.serialize_tree_vocab(batch)
+            result = {
+                '@id': batch.canonical_url,
+                'items': serialized_terms,
+                'items_total': batch.items_total
+            }
+
+            links = batch.links
+            if links:
+                result['batching'] = links
+            return result
+
         terms = []
         for term in vocabulary:
-            if title and token:
-                self.request.response.setStatus(400)
-                return dict(
-                    error=dict(
-                        type="Invalid parameters",
-                        message="You can not filter by title and token at the same time.",
-                    )  # noqa
-                )
-
             if token:
                 # the token parameter was deprecated in plone.restapi 8
                 # undeprecated in plone.restapi 9
@@ -91,6 +118,67 @@ class SerializeVocabLikeToJson:
         if links:
             result["batching"] = links
         return result
+
+    def filter_tree_vocab(
+        self,
+        outer: TreeVocabItems,
+        title: str,
+        token: str,
+        tokens: list[str] | str
+    ) -> TreeVocabItems:
+        if isinstance(tokens, str):
+            tokens: list[str] = [tokens]
+
+        terms: TreeVocabItems = OrderedDict()
+
+        for term, sub_terms in outer:
+            use = False
+
+            if token:
+                # the token parameter was deprecated in plone.restapi 8
+                # undeprecated in plone.restapi 9
+                if token.lower() == term.token.lower():
+                    use = True
+
+            elif tokens:
+                for item in tokens:
+                    if item.lower() == term.token.lower():
+                        use = True
+                        break
+
+            else:
+                term_title = safe_text(getattr(term, 'title', None) or '')
+                if (
+                        title.lower()
+                        in translate(term_title, context=self.request).lower()
+                ):
+                    use = True
+
+            inner = self.filter_tree_vocab(sub_terms.items(), title, token, tokens)
+
+            if len(inner) > 0:
+                use = True
+
+            if use:
+                terms[term] = inner
+
+        return terms
+
+    def serialize_tree_vocab(self, terms: TreeVocabItems | HypermediaBatch) -> list[dict]:
+        result_list = []
+
+        iterable = terms if isinstance(terms, HypermediaBatch) else terms.items()
+
+        for term, sub_terms in iterable:
+            serializer = getMultiAdapter((term, self.request), interface=ISerializeToJson)
+            result = serializer()
+
+            if len(sub_terms) > 0:
+                result['items'] = self.serialize_tree_vocab(sub_terms)
+
+            result_list.append(result)
+
+        return result_list
 
 
 @adapter(IVocabulary, Interface)
