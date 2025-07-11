@@ -15,6 +15,7 @@ from Products.PluggableAuthService.interfaces.plugins import IChallengePlugin
 from Products.PluggableAuthService.interfaces.plugins import IExtractionPlugin
 from Products.PluggableAuthService.plugins.BasePlugin import BasePlugin
 from zope.component import getUtility
+from zope.globalrequest import getRequest
 from zope.interface import implementer
 
 import jwt
@@ -134,6 +135,17 @@ class JWTAuthenticationPlugin(BasePlugin):
             if userid not in self._tokens:
                 return
             if credentials["token"] not in self._tokens[userid]:
+                request = getRequest()
+                if request.cookies.get("auth_token") is not None:
+                    # The user has a token that was invalidated by a SLO BackchannelLogoutRequest.
+                    # We expire the auth_token cookie and set a slo_triggered_reload cookie
+                    # to inform the frontend to reload the page
+                    request.response.expireCookie("auth_token", path="/")
+                    request.response.setCookie(
+                        "slo_triggered_reload",
+                        "Reload page to clear auth token",
+                        path="/",
+                    )
                 return
 
         return (userid, userid)
@@ -200,6 +212,13 @@ class JWTAuthenticationPlugin(BasePlugin):
         userid = payload["sub"]
         if userid in self._tokens and token in self._tokens[userid]:
             del self._tokens[userid][token]
+            return True
+
+    def clear_user_tokens(self, userid):
+        if userid in self._tokens:
+            tokens = [token for token in self._tokens[userid]]
+            for token in tokens:
+                del self._tokens[userid][token]
             return True
 
     def create_token(self, userid, timeout=None, data=None):
