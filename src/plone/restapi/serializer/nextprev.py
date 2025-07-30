@@ -4,6 +4,7 @@ from plone.app.dexterity.behaviors.nextprevious import INextPreviousProvider
 from plone.restapi.interfaces import ISerializeToJsonSummary
 from plone.restapi.serializer.converters import json_compatible
 from plone.restapi.serializer.utils import get_portal_type_title
+from Products.CMFCore.interfaces import IContentish
 from zope.component import getMultiAdapter
 
 
@@ -14,7 +15,31 @@ class NextPrevious:
         self.context = context
         self.parent = aq_parent(aq_inner(context))
         self.nextprev = INextPreviousProvider(self.parent, None)
+        if self.nextprev:
+            self.nextprev.getData = self.getExtendedData
         self.enabled = self.nextprev is not None and self.nextprev.enabled
+
+    def getExtendedData(self, obj):
+        """return the expected mapping, see `INextPreviousProvider`"""
+        if not self.nextprev.security.checkPermission("View", obj):
+            return None
+        elif not IContentish.providedBy(obj):
+            # do not return a not contentish object
+            # such as a local workflow policy for example (#11234)
+            return None
+
+        ptype = obj.portal_type
+        url = obj.absolute_url()
+        if ptype in self.nextprev.vat:  # "use view action in listings"
+            url += "/view"
+        return dict(
+            id=obj.getId(),
+            url=url,
+            title=obj.Title(),
+            nav_title=getattr(obj, "nav_title", ""),
+            description=obj.Description(),
+            portal_type=ptype,
+        )
 
     def _get_summary_serialization(self, data):
         if "obj" in data:
@@ -29,6 +54,7 @@ class NextPrevious:
                 "@type": data["portal_type"],
                 "type_title": get_portal_type_title(data.get("portal_type")),
                 "title": data["title"],
+                "nav_title": data["nav_title"],
                 "description": data["description"],
             }
 
