@@ -47,6 +47,13 @@ class Translations:
             # We are not inside a LRF, bail off
             return result
 
+        # Check if navigation root is translatable before adapting
+        if not ITranslatable.providedBy(current_lang_nav_root):
+            # Navigation root (e.g., Subsite) doesn't support translations
+            result["translations"]["items"] = translations
+            result["translations"]["root"] = {}
+            return result
+
         nav_root_manager = ITranslationManager(current_lang_nav_root)
         nav_root_translations = {}
         for (
